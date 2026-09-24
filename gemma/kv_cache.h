@@ -28,6 +28,16 @@ namespace gcpp {
 using KV_t = float;
 
 struct KVCache {
+  // KV Cache：缓存每个 token 在每一层、每个 KV head 的键和值向量。
+  //
+  // 内存布局：[seq_len, layers × kv_heads × qkv_dim × 2]
+  //   - 行（第一维）= 时间步（token 位置），追加写入局部性好
+  //   - 列（第二维）= 按层 → head → [K|V] 交错排列
+  //   - 末尾 ×2 是因为每个 head 存 K 和 V 各 qkv_dim 个元素
+  //
+  // 推理时每生成一个新 token，只需把它的 K/V 写入对应行；
+  // 注意力阶段通过 MatPtrT 视图按 stride 灵活读取某一层某一头的 K 或 V。
+  // 当写入位置超过 seq_len 时，用取模回绕实现环形缓冲（配合滑动窗口）。
   KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
           const Allocator& allocator);
 

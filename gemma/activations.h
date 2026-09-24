@@ -31,6 +31,8 @@
 
 namespace gcpp {
 
+// 注意力子层的全部中间激活。所有矩阵在构造时一次性预分配，
+// 之后每步推理只是覆写，不再做动态内存分配（零 malloc 的推理热路径）。
 struct AttentionActivations {
   // Returns the scale value to use for the query in the attention computation.
   // Also called by ops_test.
@@ -110,25 +112,32 @@ struct AttentionActivations {
 
   const ModelConfig& config;
 
-  MatStorageT<float> q;  // query
-  MatStorageT<float> q_T;  // Transposed to maximize attention speed.
+  MatStorageT<float> q;    // 当前 batch 的查询向量 [batch, heads × qkv_dim]
+  MatStorageT<float> q_T;  // Q 的转置 [qkv_dim, batch × heads]，Flash Attention 用
 
-  MatStorageT<float> pre_att_rms_out;
-  MatStorageT<float> att;      // attention vector
-  MatStorageT<float> att_out;  // attention output
+  MatStorageT<float> pre_att_rms_out;  // 注意力前的 RMSNorm 输出
+  MatStorageT<float> att;      // 注意力得分/概率 [batch, heads × seq_len]
+  MatStorageT<float> att_out;  // 每个 head 的加权 V 输出 [batch, heads × qkv_dim]
   // Accumulation of attention outputs over heads
+  // 多头输出拼接后经 SumHeads 投影回 model_dim 的结果
   MatStorageT<BF16> att_sums;
 
   // Rope
+  // RoPE 预计算的频率倒数表（local 层用 10000 基频，global 层用 1000000）
   MatStorageT<float> inv_timescale;
   MatStorageT<float> inv_timescale_global;
 
+  // query_scale = 1/sqrt(d)，在 Q·K 前预先乘在 Q 上，
+  // 防止点积方差随维度增长导致 softmax 过度尖锐。
   hwy::Divisor div_seq_len;
   // Unfortunately, some models have had non-power-of-two heads.
   hwy::Divisor div_heads;
   float query_scale;
 };
 
+// 一个 batch 的完整激活（跨所有层共享）。分配顺序即推理数据流：
+//   x → attention(内部各缓冲) → FFN(C1/C2/ffw_out) → logits → sampled
+// x 是残差流，保持 float 精度；att_sums 和 C1 用 BF16 以减少带宽。
 struct Activations {
   Activations(const ModelConfig& config, size_t batch_size, size_t seq_len,
               ThreadingContext& ctx,
@@ -184,7 +193,7 @@ struct Activations {
 
   const LayerConfig& layer_config;
 
-  MatStorageT<float> x;  // input
+  MatStorageT<float> x;    // input
   MatStorageT<BF16> x_bf;  // output of final RMSNorm, input to EmbeddingMatmul
   MatStorageT<float> logits;      // TODO: BF16 after Softmax supports that.
   MatStorageT<uint32_t> sampled;  // batch_size x 3 (padded)

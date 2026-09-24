@@ -19,8 +19,8 @@
 
 #include "gemma/configs.h"
 #include "gemma/gemma_args.h"
+#include "hwy/base.h"  // HWY_MAX
 #include "util/mat.h"  // ZeroInit
-#include "hwy/base.h"    // HWY_MAX
 
 namespace gcpp {
 

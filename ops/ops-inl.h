@@ -27,18 +27,18 @@
 #include <type_traits>  // std::enable_if_t
 #include <vector>
 
-#include "ops/matmul.h"
-#include "util/allocator.h"
-#include "util/basics.h"  // TokenAndProb, RngStream
-#include "util/mat.h"
-#include "util/threading_context.h"
-#include "util/zones.h"
 #include "hwy/base.h"
 #include "hwy/bit_set.h"
 #include "hwy/contrib/sort/order.h"
 #include "hwy/contrib/sort/vqsort.h"
 #include "hwy/detect_targets.h"
 #include "hwy/profiler.h"
+#include "ops/matmul.h"
+#include "util/allocator.h"
+#include "util/basics.h"  // TokenAndProb, RngStream
+#include "util/mat.h"
+#include "util/threading_context.h"
+#include "util/zones.h"
 #endif  // THIRD_PARTY_GEMMA_CPP_OPS_OPS_INL_H_
 
 // Include guard for (potentially) SIMD code.
@@ -50,11 +50,11 @@
 #endif
 
 #include "compression/compress-inl.h"
+#include "hwy/contrib/algo/transform-inl.h"
+#include "hwy/contrib/math/math-inl.h"
 #include "ops/dot-inl.h"
 #include "ops/matmul_static.h"  // includes highway.h
 #include "ops/sum-inl.h"
-#include "hwy/contrib/algo/transform-inl.h"
-#include "hwy/contrib/math/math-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -204,6 +204,10 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void Sigmoid(T* HWY_RESTRICT x,
 namespace detail {
 
 // Shared by RMSNorm and RMSNormInplace.
+//
+// RMSNorm 的第一步：计算归一化系数 mul = 1 / sqrt(mean(x²) + ε)。
+// 只需要一趟 SIMD 点积（x·x），不像 LayerNorm 还要额外减均值。
+// ε = 1e-6 防止全零向量除零。
 template <typename VT>
 float RMSNormMul(const VT* HWY_RESTRICT x, const size_t size,
                  ThreadingContext& ctx, const size_t worker) {
@@ -222,6 +226,10 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
     const XT* HWY_RESTRICT x, const WT* HWY_RESTRICT weight, const size_t w_ofs,
     OT* HWY_RESTRICT out, const size_t size, ThreadingContext& ctx,
     const size_t worker) {
+  // RMSNorm 完整实现：out = x * mul * (1 + w)。
+  // Gemma 用 (1+w) 而非 w，这样 w 初始化为 0 时归一化层是恒等映射。
+  // 代码把 (1+w)*m 写成 m + w*m，恰好编译为一条 FMA 指令。
+  // DecompressAndCompress 系列在读写时自动处理压缩格式的解压/压缩。
   GCPP_ZONE(ctx, worker, Zones::kOpsRmsNorm);
 
   namespace hn = hwy::HWY_NAMESPACE;
@@ -354,6 +362,13 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddAbsolutePositionalEmbeddings(
 */
 
 // `inv_timescale[dim_qkv / 2]` is precomputed in AttentionActivations.
+//
+// RoPE 旋转位置编码（HalfRope 变体：旋转相邻维度对）。
+// 把向量的每两个维度看作复平面上的点，按位置 pos 旋转角度
+// theta_i = pos × 10000^(-2i/d)。低维度转得快（捕捉短距离关系），
+// 高维度转得慢（捕捉长距离关系）。
+// 只作用于 Q 和 K——旋转后做点积，结果只依赖两 token 的相对位置。
+// SIMD 版本一次旋转 NF 对维度，尾数不足 NF 的用 LoadN 处理。
 // This overload is called if `post_qk == PostQKType::HalfRope`.
 static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(
     float* HWY_RESTRICT x, const size_t dim_qkv,
@@ -1125,6 +1140,11 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddVector(
 static HWY_NOINLINE void Softmax(Logits logits, ThreadingContext& ctx,
                                  const size_t worker,
                                  float temperature = 1.0f) {
+  // 数值稳定的 softmax，三趟 SIMD 扫描：
+  //   1. 找全局 max（防止 exp 溢出 float32 上限 ~88）
+  //   2. exp(x - max) * (1/temperature)，可选温度缩放
+  //   3. 求和后除以 sum，归一化为概率分布
+  // 温度 < 1 使分布更尖锐（确定性），温度 > 1 更平坦（多样性）。
   GCPP_ZONE(ctx, worker, Zones::kOpsSoftmax);
   HWY_DASSERT(logits.size() != 0);
 
@@ -1226,6 +1246,11 @@ static HWY_INLINE TokenAndProb ArgmaxAndMax(Logits logits) {
 // `sample_func` if `kTopK` == 1. This is worthwhile because `logits.size()` is
 // typically `kVocabSize == 256K`, and this avoids writing and then scanning
 // again for the max.
+//
+// Top-1 采样的融合优化：当只需要 argmax 时，softmax 是单调变换、
+// 不改变排序，所以不需要对 25 万词表做完整归一化。
+// 只需一趟找到 max + argmax，再算 p = exp(l_max - max) / Σexp(l_i - max)。
+// 省掉两次全量数组读写。
 static HWY_MAYBE_UNUSED TokenAndProb Top1OfSoftmax(Logits logits) {
   namespace hn = hwy::HWY_NAMESPACE;
   const hn::ScalableTag<float> d;
@@ -1259,6 +1284,10 @@ static HWY_MAYBE_UNUSED TokenAndProb Top1OfSoftmax(Logits logits) {
 static HWY_NOINLINE void LogitsSoftCap(const float cap, Logits logits,
                                        ThreadingContext& ctx,
                                        const size_t worker) {
+  // SoftCap 软限幅：x' = cap * tanh(x / cap)。
+  // 小分数时 tanh(x)≈x 几乎不变；大分数被限制在 (-cap, cap) 内。
+  // 防止个别异常 token 的 logit 独大，把 softmax 推成 one-hot。
+  // Gemma 2 引入，同时用于注意力得分（att_cap）和最终 logits（final_cap）。
   GCPP_ZONE(ctx, worker, Zones::kOpsLogitsSoftCap);
 
   namespace hn = hwy::HWY_NAMESPACE;

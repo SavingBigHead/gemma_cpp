@@ -21,11 +21,11 @@
 #include "gemma/activations.h"
 #include "gemma/configs.h"
 #include "gemma/weights.h"
+#include "hwy/profiler.h"
 #include "ops/matmul.h"
 #include "util/mat.h"
 #include "util/threading.h"
 #include "util/zones.h"
-#include "hwy/profiler.h"
 
 // Include guard (still compiled once per target)
 #if defined(THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_INL_H_) == \
@@ -138,6 +138,9 @@ HWY_NOINLINE void ResidualConnection(const MatPtrT<T2>& other,
                                      MatPtrT<float>& HWY_RESTRICT x,
                                      const LayerWeights& layer,
                                      bool is_attention, ThreadingContext& ctx) {
+  // 残差连接：x = x + f(x)。
+  // other 是子层输出（BF16），x 是残差流（float），相加时自动提升精度。
+  // 残差让信息可以"跳过"当前层直达深层，是训练深网络的关键。
   // ResidualType::Add
   AddFromBatched(other, x, ctx);
 }
@@ -145,6 +148,8 @@ HWY_NOINLINE void ResidualConnection(const MatPtrT<T2>& other,
 template <typename InOutT>
 void PostNorm(PostNormType post_norm, const MatPtr& weights,
               MatPtrT<InOutT>& inout, ThreadingContext& ctx) {
+  // PostNorm：在子层输出上加残差之前，可选地做一次 RMSNorm。
+  // Gemma 3 引入，进一步稳定深层残差流的数值范围。
   HWY_DASSERT(weights.Rows() == 1);
   if (post_norm == PostNormType::Scale) {
     RMSNormInplaceBatched(weights, inout, ctx);
@@ -153,6 +158,14 @@ void PostNorm(PostNormType post_norm, const MatPtr& weights,
 
 static inline void FFWNoVit(const LayerWeightsPtrs& layer,
                             Activations& activations, MatMulEnv& env) {
+  // 前馈网络（FFN），使用门控 GELU（GeGLU）结构：
+  //   output = (GELU(x @ W_gate) ⊙ (x @ W_up)) @ W_down
+  // 其中 ⊙ 是逐元素乘。两个分支共享同一输入 pre_ffw_rms_out。
+  //
+  // 默认走 GEMMA_FUSED_FUSED 融合路径（CallTwoMatMul）：
+  //   两个矩阵乘的 tile 算完后立刻做激活+逐元素乘，中间结果不落地，
+  //   输入只加载一次，权重 tile 的缓存复用率更高。
+  // 非融合路径先分别算两个矩阵乘再激活，便于阅读但多一趟内存往返。
   GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenFFW);
   const LayerConfig& layer_config = layer.layer_config;
 

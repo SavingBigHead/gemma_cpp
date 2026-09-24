@@ -35,7 +35,7 @@
 // After highway.h
 #include "gemma/attention.h"  // includes highway.h
 #include "gemma/gemma-inl.h"
-#include "gemma/vit.h"      // includes highway.h
+#include "gemma/vit.h"  // includes highway.h
 
 #ifndef GEMMA_CC_ONCE
 #define GEMMA_CC_ONCE
@@ -51,15 +51,15 @@
 #include "gemma/configs.h"
 #include "gemma/model_store.h"
 #include "gemma/weights.h"
+#include "hwy/aligned_allocator.h"  // Span
+#include "hwy/base.h"
+#include "hwy/timer.h"
 #include "io/blob_store.h"
 #include "io/io.h"  // Path
 #include "ops/matmul.h"
 #include "paligemma/image.h"
 #include "util/basics.h"
 #include "util/threading_context.h"
-#include "hwy/aligned_allocator.h"  // Span
-#include "hwy/base.h"
-#include "hwy/timer.h"
 
 // Require opt-in to debug/introspection functions to eliminate their overhead.
 HWY_INLINE_VAR constexpr bool kObserver = false;
@@ -85,6 +85,12 @@ static HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
                                           const LayerWeightsPtrs& layer,
                                           Activations& activations,
                                           QBatch& qbatch, MatMulEnv& env) {
+  // 单个 Transformer 层的完整前向传播，采用 Pre-Norm 残差结构：
+  //   x = x + PostNorm(Attention(RMSNorm(x)))
+  //   x = x + PostNorm(FFN(RMSNorm(x)))
+  //
+  // 每层做两次归一化（进注意力前、进 FFN 前）和两次残差相加。
+  // PostNorm 在 Gemma 3 中可选启用，对子层输出再做一次 RMSNorm。
   const LayerConfig& layer_config = layer.layer_config;
 
   RMSNormBatched(activations.x, layer.pre_attention_norm_scale,
@@ -116,6 +122,10 @@ static HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
 }
 
 // Returns the scale value to use for the embedding (basically sqrt model_dim).
+//
+// 嵌入缩放系数：sqrt(model_dim)。残差流中每一层的输出量级约为 O(1)，
+// 如果初始嵌入太小，多层累加后信号会被淹没。乘 sqrt(model_dim) 把
+// 初始信号放大到与后续各层输出相当。特意按 bf16 精度取整以匹配参考实现。
 static float EmbeddingScaling(size_t model_dim) {
   // Round to bf16 to match Gemma's Embedder, which casts before mul.
   return hwy::ConvertScalarTo<float>(
@@ -132,6 +142,11 @@ static float EmbeddingScaling(size_t model_dim) {
 // if -2 locations with appropriate begin/end image tokens are created by the
 // calling application.
 // Returns new image_token_position.
+//
+// Embedding 查表入口。给定 token id，从 vocab_size × model_dim 的大表中
+// 取出对应行，乘以缩放系数，写入激活矩阵 x 的指定行。
+// 权重可能是压缩格式（SFP/NUQ），DecompressAndZeroPad 在读取时实时解压。
+// 多模态模型（VLM/PaliGemma）中，图片 token 直接从 ViT 输出复制，不走查表。
 static HWY_NOINLINE size_t
 EmbedMMToken(int token, size_t x_row, size_t pos, size_t pos_in_prompt,
              const ModelConfig& model_config, const WeightsPtrs& weights,
@@ -191,6 +206,10 @@ static HWY_NOINLINE void PrefillTBatch(const ModelConfig& config,
                                        Activations& activations, QBatch& qbatch,
                                        MatMulEnv& env,
                                        hwy::BitSet4096<>& non_eos) {
+  // Prefill 的 token 批量模式：把一个 query 的 prompt 切成多个 token batch，
+  // 逐批送入 Transformer。每个 batch 内的 token 共享一次权重加载，
+  // 大幅提高 GEMM 的算术强度。注意最后一个 token 不在 prefill 中处理，
+  // 留给 Decode 作为生成第一个新 token 的输入起点。
   PROFILER_ZONE("Gen.PrefillT");
 
   // Batches are important for amortizing loading weights over multiple tokens.
@@ -302,6 +321,10 @@ static HWY_NOINLINE void Transformer(const ModelConfig& config,
                                      const WeightsPtrs& weights,
                                      Activations& activations, QBatch& qbatch,
                                      MatMulEnv& env) {
+  // Decode 阶段的单步前向传播：
+  //   1. 对 batch 中每个 query，取上一步生成的 token，查 Embedding
+  //   2. 依次通过所有 Transformer 层（每层会写入 KV Cache）
+  // 只处理 1 个 token（num_tokens=1），因为下一个 token 依赖本步输出。
   if constexpr (kObserver) {
     if (HWY_UNLIKELY(runtime_config.layers_output)) {
       for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
@@ -334,6 +357,10 @@ static HWY_NOINLINE void PrefillQBatch(const size_t max_prompt_size,
                                        Activations& activations, QBatch& qbatch,
                                        MatMulEnv& env,
                                        hwy::BitSet4096<>& non_eos) {
+  // Prefill 的 query 批量模式：当 batch 中查询数多于 prompt 长度时启用。
+  // 每步给每个 query 各取一个 token 组成 batch 送入模型。
+  // 与 PrefillTBatch 的区别：TBatch 按 token 批（单 query 多 token），
+  // QBatch 按查询批（多 query 各 1 token）。两者互为补充。
   PROFILER_ZONE("Gen.PrefillQ");
 
   for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
@@ -398,6 +425,14 @@ static void StreamAndUpdateEOS(const size_t qi, size_t pos, int token,
 
 // Must be called after Transformer: either after prefill, or during decode.
 // Computes logits, samples and streams the token.
+//
+// 输出头 + 采样 + 流式回调，分四步：
+//   1. 最终 RMSNorm：把最后一层输出归一化
+//   2. logits = x @ Embedding^T（tied weights，输出与输入共用一张表）
+//   3. final soft cap（可选的 tanh 限幅）
+//   4. 按采样策略（top-1 或 top-k+温度）选出 token，回调给调用方
+//
+// 注意 sampled 数组做了 padding 以避免多线程写不同行时的 false sharing。
 static void SampleAndStream(const ModelConfig& config,
                             const RuntimeConfig& runtime_config,
                             const WeightsPtrs& weights,
@@ -459,6 +494,10 @@ static void SampleAndStream(const ModelConfig& config,
 static HWY_INLINE SampleFunc
 ChooseSampleFunc(const RuntimeConfig& runtime_config,
                  const AesCtrEngine& engine, ThreadingContext& ctx) {
+  // 根据配置选择采样函数：
+  //   top_k == 1 且无 accept_token → Top1OfSoftmax（贪心，跳过全量 softmax）
+  //   其他 → FusedSoftmaxAndSampleTopK（softmax + top-k 随机采样 + 温度）
+  // 用户可通过 sample_func 完全自定义采样逻辑。
   // If user provided a sample_func, use it.
   if (runtime_config.sample_func) return runtime_config.sample_func;
 
@@ -485,6 +524,13 @@ ChooseSampleFunc(const RuntimeConfig& runtime_config,
 }
 
 // Decode: generates one continuation token for each query in `qbatch`.
+//
+// 推理总调度：先 Prefill 填充 KV Cache，再逐 token Decode。
+// Prefill 策略根据 batch 大小与 prompt 长度自动选择：
+//   - 查询多、prompt 短 → PrefillQBatch（按查询并行）
+//   - 否则 → PrefillTBatch（按 token 批量，单查询）
+// Decode 循环每步调用 Transformer（每 query 1 token）+ SampleAndStream，
+// 直到所有 query 遇到 EOS 或达到 max_generated_tokens。
 static void GenerateT(const ModelConfig& config,
                       const RuntimeConfig& runtime_config,
                       const AesCtrEngine& engine, const WeightsPtrs& weights,

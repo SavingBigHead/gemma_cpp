@@ -90,6 +90,12 @@ static void TransposeQ(const MatPtrT<float>& q, MatPtrT<float>& q_t,
 }
 
 // Updates q in place for RMSNorm and positional encoding.
+//
+// 对 Q 向量做进入注意力前的最后两步预处理：
+//   1. 可选的 query RMSNorm（部分模型层启用）
+//   2. RoPE 旋转位置编码 + query_scale 缩放（乘 1/sqrt(d)）
+// Flash Attention 路径把这两步从注意力内循环中提前拆出，
+// 使得内层 tile 循环只需要做纯点积，有利于 SIMD 展开和寄存器分配。
 void RMSNormAndPositionalEncoding(const size_t num_tokens, const QBatch& qbatch,
                                   MatPtrT<KV_t>& q, const size_t layer_idx,
                                   const LayerWeightsPtrs& layer,
@@ -129,6 +135,18 @@ void RMSNormAndPositionalEncoding(const size_t num_tokens, const QBatch& qbatch,
 }
 
 // Handles a single v row of flash attention for a single q.k dot product.
+//
+// 在线 softmax 的核心递推步骤（单个新 token）：
+//   输入 x = 当前 Q·K 得分，old_max/old_d 是之前所有 token 的
+//   running max 和 running sum，att_out 是已部分累积的加权和。
+//
+// 更新规则（数学上与完整 softmax 等价）：
+//   m' = max(m, x)                     新的最大值
+//   d' = e^(x-m') + d * e^(m-m')       新的分母（修正旧贡献）
+//   out' = out * (d/d')*e^(m-m') + v * e^(x-m')/d'
+//
+// 这样每处理一个新 token 只需要 O(v_cols) 的向量操作，
+// 不需要把所有得分暂存到内存再做全局 softmax。
 void HWY_INLINE SingleFlashAttentionStep(float x, float cap, float& old_max,
                                          float& old_d,
                                          const float* HWY_RESTRICT v,
@@ -151,6 +169,11 @@ void HWY_INLINE SingleFlashAttentionStep(float x, float cap, float& old_max,
 }
 
 // Calculates the complete attention outputs for a single row of q.
+//
+// 标量版 Flash Attention：对单个查询向量 q 扫描 [start_pos, last_pos]
+// 的所有 K/V，边扫描边维护 running max (m)、running sum (d) 和
+// 部分输出 (att_out)，全程只需要 O(v_cols) 的额外内存。
+// 第一个 token 初始化 m/d/out，后续 token 调用 Step 递推更新。
 void SingleFlashAttention(const size_t start_pos, const size_t last_pos,
                           const float* HWY_RESTRICT q, const MatPtrT<KV_t>& k,
                           const MatPtrT<KV_t>& v, const size_t layer_idx,
@@ -191,6 +214,11 @@ VF QDotKVector(DF df, const uint32_t* HWY_RESTRICT q_offsets,
 
 // Returns an NF Q rows by 8 K rows tile of Q.K dot products, in single
 // precision.
+//
+// SIMD 分块点积：同时计算 NF 个查询 × 8 个 K 时间步 = NF×8 个得分。
+// Q 已预先转置，使得 NF 个查询的同一维度在内存中连续（SIMD 加载友好）。
+// 每次内层循环用 hn::MulAdd（FMA 指令）更新 8 个独立的累加器，
+// 把 Q 的读取量减少 8 倍、K 的读取量减少 NF 倍。
 // This is the result of NF rows of Q against 8 K timesteps, with positions
 // given by k_pos[0..7]. Q has been transposed so that the NF rows are read in
 // consecutive elements, and other columns by adding q_stride.
@@ -265,6 +293,16 @@ VF HWY_INLINE ElementwiseSumOf8(DF df, const VF& x0, const VF& x1, const VF& x2,
 // Sweeps a tile of NF Q rows by 8 K timesteps accumulators from start_pos to
 // min_last_pos, then sweeps the remaining timesteps in the range (min_last_pos,
 // max_last_pos].
+//
+// 向量化 Flash Attention 的主循环，分两个阶段：
+//   阶段一（8 tile 循环）：每次处理 8 个 K 时间步，所有行都有有效数据，
+//     用 QDotKTileFloat 批量算点积后，在寄存器内完成在线 softmax
+//     递推（m/d 更新 + 输出修正），中间得分不落地内存。
+//   阶段二（单步循环）：处理尾部不足 8 个的时间步，用掩码屏蔽超出
+//     各行 last_pos 的位置（causal_offset 置为极大负数使其 exp 后为 0）。
+//
+// old_m / old_d 是 NF 个查询各自的 running max / running sum，
+// 存放在 SIMD 向量的各个 lane 中。
 void TileFlashAttention(
     const MatPtrT<float>& q, const uint32_t* HWY_RESTRICT q_offsets,
     const StridedView<float>& qT, const MatPtrT<KV_t>& k,
@@ -592,6 +630,13 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
                     const size_t layer_idx, const LayerWeightsPtrs& layer,
                     AttentionActivations& activations, QBatch& qbatch,
                     ThreadingContext& ctx) {
+  // Flash Attention 总入口。
+  // 根据 batch 大小、head 数量和可用并行度自动选择三种模式之一：
+  //   模式 1：NF 个 Q 行 × 8 个 K 时间步的大 tile（需要足够的行分组）
+  //   模式 2：4 个 Q 行 × NF 个 K 时间步的中 tile
+  //   模式 3：逐行标量处理（通用回退）
+  // 选好 tile 大小后，把 Q 转置以配合 SIMD 连续加载，
+  // 最后将 [token×head] 任务按 tile 分发给线程池。
   GCPP_ZONE(ctx, 0, Zones::kFlashAttentionInclusive);
   RMSNormAndPositionalEncoding(num_tokens, qbatch, activations.q, layer_idx,
                                layer, activations, ctx);

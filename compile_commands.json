@@ -1,6 +1,16 @@
 [
 {
   "directory": "/home/meng/gemma.cpp",
+  "arguments": ["/usr/bin/g++", "-c", "-m64", "-std=c++17", "-I.", "-DCPPHTTPLIB_OPENSSL_SUPPORT", "-finput-charset=UTF-8", "-fexec-charset=UTF-8", "-I", "/home/meng/.xmake/packages/n/nlohmann_json/v3.12.0/b36e201b1206419d94ef523b409412cf/include", "-I", "/home/meng/.xmake/packages/c/cpp-httplib/v0.18.1/6b356ec7ee5b4720a1d08bfb201644bc/include", "-I", "/home/meng/.xmake/packages/h/highway_gemma/1.4.0/fdc3c9f2b36c4fdb8b89961824042ec7/include", "-I", "/home/meng/.xmake/packages/s/sentencepiece/v0.2.1/ccc71684a2704b5c9020ee1ad8fc33b5/include", "-o", "build/.objs/gemma_api_server/linux/x86_64/release/gemma/api_server.cc.o", "gemma/api_server.cc"],
+  "file": "gemma/api_server.cc"
+},
+{
+  "directory": "/home/meng/gemma.cpp",
+  "arguments": ["/usr/bin/g++", "-c", "-m64", "-std=c++17", "-I.", "-DCPPHTTPLIB_OPENSSL_SUPPORT", "-finput-charset=UTF-8", "-fexec-charset=UTF-8", "-I", "/home/meng/.xmake/packages/n/nlohmann_json/v3.12.0/b36e201b1206419d94ef523b409412cf/include", "-I", "/home/meng/.xmake/packages/c/cpp-httplib/v0.18.1/6b356ec7ee5b4720a1d08bfb201644bc/include", "-I", "/home/meng/.xmake/packages/h/highway_gemma/1.4.0/fdc3c9f2b36c4fdb8b89961824042ec7/include", "-I", "/home/meng/.xmake/packages/s/sentencepiece/v0.2.1/ccc71684a2704b5c9020ee1ad8fc33b5/include", "-o", "build/.objs/gemma_api_client/linux/x86_64/release/gemma/api_client.cc.o", "gemma/api_client.cc"],
+  "file": "gemma/api_client.cc"
+},
+{
+  "directory": "/home/meng/gemma.cpp",
   "arguments": ["/usr/bin/g++", "-c", "-m64", "-std=c++17", "-I.", "-DBENCHMARK_STATIC_DEFINE", "-finput-charset=UTF-8", "-fexec-charset=UTF-8", "-I", "/home/meng/.xmake/packages/n/nlohmann_json/v3.12.0/b36e201b1206419d94ef523b409412cf/include", "-I", "/home/meng/.xmake/packages/b/benchmark/v1.9.5/3342284b744d4dd2972a41ed57880659/include", "-I", "/home/meng/.xmake/packages/h/highway_gemma/1.4.0/fdc3c9f2b36c4fdb8b89961824042ec7/include", "-I", "/home/meng/.xmake/packages/s/sentencepiece/v0.2.1/ccc71684a2704b5c9020ee1ad8fc33b5/include", "-o", "build/.objs/benchmarks/linux/x86_64/release/evals/benchmarks.cc.o", "evals/benchmarks.cc"],
   "file": "evals/benchmarks.cc"
 },
@@ -166,18 +176,13 @@
 },
 {
   "directory": "/home/meng/gemma.cpp",
-  "arguments": ["/usr/bin/g++", "-c", "-m64", "-std=c++17", "-I.", "-finput-charset=UTF-8", "-fexec-charset=UTF-8", "-I", "/home/meng/.xmake/packages/h/highway_gemma/1.4.0/fdc3c9f2b36c4fdb8b89961824042ec7/include", "-I", "/home/meng/.xmake/packages/s/sentencepiece/v0.2.1/ccc71684a2704b5c9020ee1ad8fc33b5/include", "-o", "build/.objs/gemma/linux/x86_64/release/gemma/run.cc.o", "gemma/run.cc"],
-  "file": "gemma/run.cc"
+  "arguments": ["/usr/bin/g++", "-c", "-m64", "-std=c++17", "-I.", "-finput-charset=UTF-8", "-fexec-charset=UTF-8", "-I", "/home/meng/.xmake/packages/n/nlohmann_json/v3.12.0/b36e201b1206419d94ef523b409412cf/include", "-I", "/home/meng/.xmake/packages/h/highway_gemma/1.4.0/fdc3c9f2b36c4fdb8b89961824042ec7/include", "-I", "/home/meng/.xmake/packages/s/sentencepiece/v0.2.1/ccc71684a2704b5c9020ee1ad8fc33b5/include", "-o", "build/.objs/single_benchmark/linux/x86_64/release/evals/benchmark.cc.o", "evals/benchmark.cc"],
+  "file": "evals/benchmark.cc"
 },
 {
   "directory": "/home/meng/gemma.cpp",
-  "arguments": ["/usr/bin/g++", "-c", "-m64", "-std=c++17", "-I.", "-DCPPHTTPLIB_OPENSSL_SUPPORT", "-finput-charset=UTF-8", "-fexec-charset=UTF-8", "-I", "/home/meng/.xmake/packages/n/nlohmann_json/v3.12.0/b36e201b1206419d94ef523b409412cf/include", "-I", "/home/meng/.xmake/packages/c/cpp-httplib/v0.18.1/6b356ec7ee5b4720a1d08bfb201644bc/include", "-I", "/home/meng/.xmake/packages/h/highway_gemma/1.4.0/fdc3c9f2b36c4fdb8b89961824042ec7/include", "-I", "/home/meng/.xmake/packages/s/sentencepiece/v0.2.1/ccc71684a2704b5c9020ee1ad8fc33b5/include", "-o", "build/.objs/gemma_api_client/linux/x86_64/release/gemma/api_client.cc.o", "gemma/api_client.cc"],
-  "file": "gemma/api_client.cc"
-},
-{
-  "directory": "/home/meng/gemma.cpp",
-  "arguments": ["/usr/bin/g++", "-c", "-m64", "-std=c++17", "-I.", "-DCPPHTTPLIB_OPENSSL_SUPPORT", "-finput-charset=UTF-8", "-fexec-charset=UTF-8", "-I", "/home/meng/.xmake/packages/n/nlohmann_json/v3.12.0/b36e201b1206419d94ef523b409412cf/include", "-I", "/home/meng/.xmake/packages/c/cpp-httplib/v0.18.1/6b356ec7ee5b4720a1d08bfb201644bc/include", "-I", "/home/meng/.xmake/packages/h/highway_gemma/1.4.0/fdc3c9f2b36c4fdb8b89961824042ec7/include", "-I", "/home/meng/.xmake/packages/s/sentencepiece/v0.2.1/ccc71684a2704b5c9020ee1ad8fc33b5/include", "-o", "build/.objs/gemma_api_server/linux/x86_64/release/gemma/api_server.cc.o", "gemma/api_server.cc"],
-  "file": "gemma/api_server.cc"
+  "arguments": ["/usr/bin/g++", "-c", "-m64", "-std=c++17", "-I.", "-finput-charset=UTF-8", "-fexec-charset=UTF-8", "-I", "/home/meng/.xmake/packages/h/highway_gemma/1.4.0/fdc3c9f2b36c4fdb8b89961824042ec7/include", "-I", "/home/meng/.xmake/packages/s/sentencepiece/v0.2.1/ccc71684a2704b5c9020ee1ad8fc33b5/include", "-o", "build/.objs/simplified_gemma/linux/x86_64/release/examples/simplified_gemma/run.cc.o", "examples/simplified_gemma/run.cc"],
+  "file": "examples/simplified_gemma/run.cc"
 },
 {
   "directory": "/home/meng/gemma.cpp",
@@ -186,6 +191,11 @@
 },
 {
   "directory": "/home/meng/gemma.cpp",
-  "arguments": ["/usr/bin/g++", "-c", "-m64", "-std=c++17", "-I.", "-finput-charset=UTF-8", "-fexec-charset=UTF-8", "-I", "/home/meng/.xmake/packages/n/nlohmann_json/v3.12.0/b36e201b1206419d94ef523b409412cf/include", "-I", "/home/meng/.xmake/packages/h/highway_gemma/1.4.0/fdc3c9f2b36c4fdb8b89961824042ec7/include", "-I", "/home/meng/.xmake/packages/s/sentencepiece/v0.2.1/ccc71684a2704b5c9020ee1ad8fc33b5/include", "-o", "build/.objs/single_benchmark/linux/x86_64/release/evals/benchmark.cc.o", "evals/benchmark.cc"],
-  "file": "evals/benchmark.cc"
+  "arguments": ["/usr/bin/g++", "-c", "-m64", "-std=c++17", "-I.", "-finput-charset=UTF-8", "-fexec-charset=UTF-8", "-I", "/home/meng/.xmake/packages/h/highway_gemma/1.4.0/fdc3c9f2b36c4fdb8b89961824042ec7/include", "-I", "/home/meng/.xmake/packages/s/sentencepiece/v0.2.1/ccc71684a2704b5c9020ee1ad8fc33b5/include", "-o", "build/.objs/hello_world/linux/x86_64/release/examples/hello_world/run.cc.o", "examples/hello_world/run.cc"],
+  "file": "examples/hello_world/run.cc"
+},
+{
+  "directory": "/home/meng/gemma.cpp",
+  "arguments": ["/usr/bin/g++", "-c", "-m64", "-std=c++17", "-I.", "-finput-charset=UTF-8", "-fexec-charset=UTF-8", "-I", "/home/meng/.xmake/packages/h/highway_gemma/1.4.0/fdc3c9f2b36c4fdb8b89961824042ec7/include", "-I", "/home/meng/.xmake/packages/s/sentencepiece/v0.2.1/ccc71684a2704b5c9020ee1ad8fc33b5/include", "-o", "build/.objs/gemma/linux/x86_64/release/gemma/run.cc.o", "gemma/run.cc"],
+  "file": "gemma/run.cc"
 }]

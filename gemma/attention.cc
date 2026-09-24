@@ -51,6 +51,12 @@ namespace HWY_NAMESPACE {
 
 // Computes Q.K scores, which are "logits" (or scores) stored to att.
 // `k` is a strided view of the kv cache with dimensions [seq_len, qkv_dim].
+//
+// 注意力得分计算的第一步：当前查询向量 Q 与每个历史位置的
+// 键向量 K 做点积，得到"相似度分数"，暂存到 att 数组中。
+// 点积结果越大，表示当前 token 越应该"关注"那个历史位置的 token。
+// 这里没有做 softmax，softmax 在调用方 QDotK 之后再统一做。
+// div_seq_len 用于 KV Cache 环形缓冲区的取模回绕（wraparound）。
 static HWY_INLINE void QDotK(const size_t start_pos, const size_t last_pos,
                              const hwy::Divisor& div_seq_len,
                              const float* HWY_RESTRICT q,
@@ -77,6 +83,11 @@ void PositionalEncodingQK(float* qk, const size_t layer_idx,
                           const AttentionActivations& activations,
                           ThreadingContext& ctx, const size_t worker,
                           const size_t pos, const float mul) {
+  // 对 Q 或 K 向量施加 RoPE 旋转位置编码。
+  // RoPE 把向量的每一对维度看作复平面上的一个点，按 token 位置旋转
+  // 相应角度，使得 Q·K 的点积只依赖于两个 token 的"相对位置"。
+  // mul 通常是 query_scale（即 1/sqrt(d)），在旋转的同时完成缩放，
+  // 减少一趟独立的内存读写。
   const size_t qkv_dim = layer.layer_config.qkv_dim;
   const PostQKType& post_qk = layer.layer_config.post_qk;
   // qk is either q or k, so qkv_dim is the length we operate on.
@@ -99,6 +110,12 @@ void PositionalEncodingQK(float* qk, const size_t layer_idx,
 // `att_out`. Equivalent in gemma/modules.py:
 // encoded = jnp.einsum('BTNS,BSNH->BTNH', probs, value_proj)
 // `v` is a strided view of the kv cache with dimensions [seq_len, qkv_dim].
+//
+// 注意力的最后一步：用 softmax 得到的概率分布 att，
+// 对所有历史位置的值向量 V 做加权求和，得到当前 head 的输出。
+// 数学上：output = Σ p_i * V_i。
+// 第一个位置用 MulByConstTo 初始化输出，后续位置用 MulByConstAndAdd
+// 累加。这是一个带宽受限的循环——V 数据量通常远大于 att。
 static HWY_INLINE void WeightedSumV(
     const size_t start_pos, const size_t last_pos,
     const hwy::Divisor& div_seq_len, const float* HWY_RESTRICT att,
@@ -128,6 +145,14 @@ static HWY_INLINE void WeightedSumV(
 
 // Calculates the attention outputs for a single q, which may be updated
 // in place for RMSNorm.
+//
+// 朴素注意力的完整流程（单查询、单 head）：
+//   1. 可选：对 Q 做 RMSNorm（query_norm）
+//   2. 对 Q 施加 RoPE + query_scale
+//   3. Q·K 计算注意力得分
+//   4. SoftCap（可选的 tanh 限幅，防止分数过度集中）
+//   5. Softmax 归一化为概率分布
+//   6. 按概率对 V 加权求和得到输出
 void SingleDotSoftmaxWeightedSum(
     const size_t pos, const size_t start_pos, const size_t last_pos,
     float* HWY_RESTRICT q, const MatPtrT<KV_t>& k, const MatPtrT<KV_t>& v,
@@ -164,6 +189,11 @@ void SingleDotSoftmaxWeightedSum(
 
 // The attention window usually starts at 0 unless `pos` is larger than
 // the attention window size, then it is `pos` - window_size + 1.
+//
+// 滑动窗口注意力的起点计算。
+// Gemma 3 的层分为 local（只看最近 N 个 token）和 global（看全部）。
+// 如果当前位置 pos 超过窗口大小，注意力只需从 pos - (window-1) 开始，
+// 更早的 KV Cache 直接跳过，大幅降低长文本的计算量和带宽。
 size_t StartPos(size_t pos, const ModelConfig& config, size_t layer_idx) {
   const size_t att_window_size = config.attention_window_sizes[layer_idx];
   return pos - HWY_MIN(att_window_size - 1, pos);
@@ -173,6 +203,14 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
                            const LayerWeightsPtrs& layer,
                            AttentionActivations& activations, QBatch& qbatch,
                            ThreadingContext& ctx) {
+  // 朴素注意力路径的批处理调度入口。
+  // 将 [token × query × head] 三维任务空间展开成一维，用线程池并行。
+  // 每个任务处理一个 (token, head) 组合：
+  //   1. 从 KV Cache 构造当前 head 对应的 K、V 视图（零拷贝）
+  //   2. 调用 SingleDotSoftmaxWeightedSum 完成完整注意力
+  //
+  // GQA 映射：head / kHeadGroups 把多个 Q head 映射到同一个 KV head，
+  // 多个 Q head 共享同一块 K/V 内存区域，从而缩小 KV Cache。
   GCPP_ZONE(ctx, 0, Zones::kGenAttentionDotSoftmaxWeightedSumInclusive);
 
   const hwy::Divisor div_qbatch(qbatch.Size());
@@ -244,6 +282,11 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
 // number of tokens from one query: 1 for decode, otherwise prefill_tbatch_size.
 
 // Fills activations.q and writes to KV cache.
+//
+// QKV 投影：把归一化后的输入 x 乘以两个权重矩阵，
+// 生成 Q（只需当前 token）和 K/V（写入 KV Cache 供后续复用）。
+// K/V 的矩阵乘输出行指针直接指向 Cache 对应位置（零拷贝写入）。
+// 写入后对 K 做进一步处理（可选 RMSNorm + RoPE）并压缩存储。
 static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
                                   const LayerWeightsPtrs& layer,
                                   AttentionActivations& activations,
@@ -322,6 +365,10 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
 
 // Sums encoded (`att_out`) over num_heads (`layer_config.heads`) and
 // head_dim (`qkv_dim`) into output (`layer_out`).
+//
+// 合并各头输出。每个 head 独立算出的 att_out（长度 qkv_dim）
+// 拼接成一行，再乘以输出投影矩阵，求和还原为 model_dim 维向量。
+// 这一步实现了 W_o 投影：output = concat(head_1..head_h) @ W_o。
 static HWY_INLINE void SumHeads(const LayerWeightsPtrs& layer,
                                 AttentionActivations& activations,
                                 MatMulEnv& env) {
@@ -343,6 +390,10 @@ void GemmaAttention(size_t num_tokens, const size_t layer_idx,
                     const LayerWeightsPtrs& layer,
                     AttentionActivations& activations, QBatch& qbatch,
                     MatMulEnv& env, int flags) {
+  // Gemma 注意力的总入口，分三步：
+  //   1. ComputeQKV：投影生成 Q/K/V，K/V 写入缓存
+  //   2. 注意力主体：朴素（kAttentionUseOld）或 Flash Attention
+  //   3. SumHeads：合并多头输出并投影回 model_dim
   GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenAttention);
 
   const LayerConfig& layer_config = layer.layer_config;

@@ -35,10 +35,10 @@
 #include <cmath>      // std::abs
 #include <memory>
 
-#include "util/mat.h"
-#include "util/threading_context.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
+#include "util/mat.h"
+#include "util/threading_context.h"
 
 // clang-format off
 #undef HWY_TARGET_INCLUDE

@@ -22,12 +22,12 @@
 #include <string>
 #include <vector>
 
-#include "third_party/gemma_cpp/gemma/gemma.h"
-#include "third_party/gemma_cpp/gemma/gemma_args.h"  // LoaderArgs
-#include "third_party/gemma_cpp/gemma/tokenizer.h"
-#include "third_party/gemma_cpp/ops/matmul.h"
-#include "third_party/gemma_cpp/util/threading_context.h"
-#include "third_party/highway/hwy/base.h"
+#include "gemma/gemma.h"
+#include "gemma/gemma_args.h"  // LoaderArgs
+#include "gemma/tokenizer.h"
+#include "ops/matmul.h"
+#include "util/threading_context.h"
+#include "hwy/base.h"
 
 class SimplifiedGemma {
  public:
@@ -75,7 +75,7 @@ class SimplifiedGemma {
         .stream_token = stream_token,
         .accept_token =
             [&](int token, float /* prob */) {
-              return !reject_tokens.contains(token);
+              return reject_tokens.find(token) == reject_tokens.end();
             },
     };
     gemma_.Generate(runtime_config, tokens, 0, kv_cache_, env_, timing_info);

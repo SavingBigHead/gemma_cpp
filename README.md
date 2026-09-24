@@ -88,6 +88,7 @@ Guidelines](https://opensource.google.com/conduct/).
 Before starting, you should have installed:
 
 - [CMake](https://cmake.org/)
+- [xmake](https://xmake.io/) if you prefer an xmake build.
 - [Clang C++ compiler](https://clang.llvm.org/get_started.html), supporting at
   least C++17.
 - `tar` for extracting archives from Kaggle.
@@ -192,6 +193,19 @@ bazel build -c opt --cxxopt=-std=c++20 :gemma
 
 If the build is successful, you should now have a `gemma` executable in the
 `bazel-bin/` directory.
+
+#### xmake
+
+```sh
+xmake f -m release -y
+xmake -j [number of parallel threads to use]
+```
+
+The executable is written to `build/<platform>/<architecture>/release/gemma`.
+To build the shared library and C API, run `xmake f --build-dll=y` before
+`xmake`. To include tests, add `--enable-tests=y` and build with `xmake -a`.
+Example programs are available as non-default targets, for example
+`xmake build hello_world` or `xmake build simplified_gemma`.
 
 #### Make
 

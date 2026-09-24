@@ -23,3 +23,7 @@ python/*/__pycache__
 # Local development
 .env
 .env.local
+
+.xmake
+
+docs/

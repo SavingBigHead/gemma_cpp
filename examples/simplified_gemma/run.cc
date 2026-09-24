@@ -17,7 +17,7 @@
 
 #include <string>
 
-#include "third_party/gemma_cpp/examples/simplified_gemma/gemma.hpp"
+#include "examples/simplified_gemma/gemma.hpp"
 #include "gemma/gemma_args.h"  // LoaderArgs
 
 int main(int argc, char** argv) {

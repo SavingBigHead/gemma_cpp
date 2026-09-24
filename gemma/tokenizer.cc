@@ -22,10 +22,10 @@
 #include <vector>
 
 #include "gemma/configs.h"  // PromptWrapping
-#include "hwy/base.h"         // HWY_ASSERT
+#include "hwy/base.h"       // HWY_ASSERT
 #include "hwy/profiler.h"
 // copybara:import_next_line:sentencepiece
-#include "src/sentencepiece_processor.h"
+#include "sentencepiece_processor.h"
 
 namespace gcpp {
 
